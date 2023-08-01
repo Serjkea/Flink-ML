@@ -28,21 +28,21 @@ public class RealTimePrediction {
                 .forConnector("kafka")
                 .schema(
                         Schema.newBuilder()
-                                .column("oil_temp", DataTypes.DOUBLE())
-                                .column("water_temp", DataTypes.DOUBLE())
-                                .column("engine_speed", DataTypes.DOUBLE())
-                                .column("air_temp", DataTypes.DOUBLE())
-                                .column("fan_speed", DataTypes.DOUBLE())
+                                .column("f1", DataTypes.DOUBLE())
+                                .column("f2", DataTypes.DOUBLE())
+                                .column("f3", DataTypes.DOUBLE())
+                                .column("f4", DataTypes.DOUBLE())
+                                .column("f5", DataTypes.DOUBLE())
                                 .column("label", DataTypes.DOUBLE())
                                 .build()
                 )
                 .format("csv")
                 .option("topic", "input-topic")
-                .option("properties.bootstrap.servers", "localhost:29092")
+                .option("properties.bootstrap.servers", "localhost:9092")
                 .option("scan.startup.mode", "earliest-offset")
                 .build();
 
-        tableEnv.createTable("features", tableDescriptor);
+        tableEnv.createTable("features_table", tableDescriptor);
 
         DataStream<Row> trainStream = env.fromCollection(TrainData.getTrainData);
 
@@ -53,8 +53,8 @@ public class RealTimePrediction {
         KnnModel knnModel = knn.fit(trainTable);
 
         Table predictTable = tableEnv
-                .sqlQuery("SELECT ARRAY[oil_temp, water_temp, engine_speed, air_temp, fan_speed] AS feature, label FROM features")
-                .select(arrayToVector($("feature")).as("features"), $("label"));
+                .sqlQuery("SELECT ARRAY[f1, f2, f3, f4, f5] AS features, label FROM features_table")
+                .select(arrayToVector($("features")).as("features"), $("label"));
 
         Table outputTable = knnModel.transform(predictTable)[0];
 
