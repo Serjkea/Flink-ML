@@ -12,13 +12,31 @@ import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableDescriptor;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
-import org.apache.flink.util.CloseableIterator;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.StringSerializer;
+
+import java.util.Optional;
+import java.util.Properties;
 
 import static org.apache.flink.ml.Functions.arrayToVector;
 import static org.apache.flink.table.api.Expressions.$;
 
 public class RealTimePrediction {
+
+    private static Optional<String> maybeCreateAlertMessage(double predictionResult) {
+        if (predictionResult >= 5.0 && predictionResult < 7.0) {
+            return Optional.of("WARNING. The system load rating has exceeded 5.0 and is equal to " + predictionResult);
+        } else if (predictionResult >= 7.0) {
+            return Optional.of("CRITICAL. The system load rating has exceeded 7.0 and is equal to " + predictionResult);
+        } else return Optional.empty();
+    }
+
     public static void main(String[] args) {
+
+        String kafkaHost = "localhost:9092";
+
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
 
@@ -38,8 +56,8 @@ public class RealTimePrediction {
                 )
                 .format("csv")
                 .option("topic", "input-topic")
-                .option("properties.bootstrap.servers", "localhost:9092")
-                .option("scan.startup.mode", "earliest-offset")
+                .option("properties.bootstrap.servers", kafkaHost)
+                .option("scan.startup.mode", "latest-offset")
                 .build();
 
         tableEnv.createTable("features_table", tableDescriptor);
@@ -58,14 +76,27 @@ public class RealTimePrediction {
 
         Table outputTable = knnModel.transform(predictTable)[0];
 
-        for (CloseableIterator<Row> it = outputTable.execute().collect(); it.hasNext(); ) {
-            Row row = it.next();
+        Properties props = new Properties();
+        props.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaHost);
+        props.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(ProducerConfig.ACKS_CONFIG, "all");
+
+        KafkaProducer<String, String> producer = new KafkaProducer<>(props);
+
+        outputTable.execute().collect().forEachRemaining(row -> {
             DenseVector features = (DenseVector) row.getField(knn.getFeaturesCol());
             double predictionResult = (Double) row.getField(knn.getPredictionCol());
             System.out.printf(
                     "Features: %-15s \tPrediction Result: %s\n",
                     features, predictionResult);
-        }
+            maybeCreateAlertMessage(predictionResult).ifPresent(msg -> {
+                ProducerRecord<String, String> message = new ProducerRecord<>("alert-topic", "message-key", msg);
+                producer.send(message);
+            });
+        });
+
+        producer.close();
     }
 }
 
